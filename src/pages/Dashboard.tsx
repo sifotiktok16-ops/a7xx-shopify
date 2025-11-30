@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
-import { apiService } from '@/services/api'
+import { ShopifyAdminService } from '@/services/shopifyAdmin'
+import { AutoSyncService } from '@/services/autoSync'
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -10,7 +11,8 @@ import {
   Users, 
   Package,
   Calendar,
-  RefreshCw
+  RefreshCw,
+  Download
 } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts'
 import EmptyState from '@/components/EmptyState'
@@ -64,6 +66,7 @@ function MetricCard({ title, value, change, icon: Icon, loading }: MetricCardPro
 export default function Dashboard() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
+  const [syncing, setSyncing] = useState(false)
   const [user, setUser] = useState<any>(null)
   const [metrics, setMetrics] = useState({
     totalSales: '$0',
@@ -85,6 +88,23 @@ export default function Dashboard() {
     fetchDashboardData()
   }, [dateRange])
 
+  const handleManualSync = async () => {
+    if (!user) return
+    
+    setSyncing(true)
+    try {
+      const result = await AutoSyncService.triggerManualSync(user.id)
+      if (result.success) {
+        // Refresh dashboard data
+        await fetchDashboardData()
+      }
+    } catch (error) {
+      console.error('Manual sync error:', error)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   const fetchDashboardData = async () => {
     try {
       setLoading(true)
@@ -93,6 +113,11 @@ export default function Dashboard() {
       const { data: { user: currentUser } } = await supabase.auth.getUser()
       setUser(currentUser)
       
+      if (!currentUser) {
+        setLoading(false)
+        return
+      }
+
       // Get user's Shopify connection
       const { data: connection } = await supabase
         .from('shopify_connections')
@@ -106,7 +131,7 @@ export default function Dashboard() {
         return
       }
 
-      // Check if we have any data, if not, attempt to sync
+      // Check if we have any orders, if not, fetch from Shopify
       const { data: existingOrders } = await supabase
         .from('orders')
         .select('id')
@@ -114,40 +139,40 @@ export default function Dashboard() {
         .limit(1)
 
       if (!existingOrders || existingOrders.length === 0) {
-        // Try to sync data from Shopify
-        try {
-          await apiService.syncStoreData(currentUser?.id || '')
-        } catch (syncError) {
-          console.warn('Could not sync data from Shopify:', syncError)
-          // Continue with empty data
+        // Fetch orders from Shopify Admin API
+        const result = await ShopifyAdminService.fetchAllOrders(currentUser.id)
+        if (!result.success) {
+          console.error('Failed to fetch orders:', result.error)
         }
       }
 
-      // Fetch orders for the selected date range
-      const startDate = getStartDate(dateRange)
-      const { data: orders } = await supabase
+      // Fetch orders from database
+      const { data: orders, error: ordersError } = await supabase
         .from('orders')
         .select('*')
         .eq('connection_id', connection.id)
-        .gte('order_date', startDate.toISOString())
         .order('order_date', { ascending: false })
 
-      // Fetch products
-      const { data: products } = await supabase
+      if (ordersError) throw ordersError
+
+      // Fetch products from database
+      const { data: products, error: productsError } = await supabase
         .from('products')
         .select('*')
         .eq('connection_id', connection.id)
-        .order('updated_at', { ascending: false })
+        .order('created_at', { ascending: false })
         .limit(10)
 
-      // Calculate enhanced metrics
-      const totalSales = orders?.reduce((sum, order) => sum + parseFloat(order.total_price), 0) || 0
+      if (productsError) throw productsError
+
+      // Calculate metrics
+      const totalSales = orders?.reduce((sum, order) => sum + (parseFloat(order.total_price) || 0), 0) || 0
       const orderCount = orders?.length || 0
       const avgOrderValue = orderCount > 0 ? totalSales / orderCount : 0
       const dailyOrders = Math.round(orderCount / (dateRange === '7d' ? 7 : dateRange === '30d' ? 30 : 90))
       
       // Calculate customer metrics
-      const uniqueCustomers = new Set(orders?.map(order => order.customer_email).filter(Boolean))
+      const uniqueCustomers = new Set(orders?.map(order => order.email).filter(Boolean))
       const totalCustomers = uniqueCustomers.size
       
       // Calculate order status distribution
@@ -171,18 +196,26 @@ export default function Dashboard() {
         dailyOrders,
         totalCustomers,
         returningCustomers: Math.round(totalCustomers * 0.3), // Mock returning customers
-        revenueGrowth: 12.5, // Mock growth percentage
+        revenueGrowth: 15.2, // Mock growth percentage
       })
 
-      // Prepare sales chart data (last 7 days)
-      const salesByDate = processSalesData(orders || [])
-      setSalesData(salesByDate)
+      // Prepare sales chart data
+      const salesMap = new Map<string, number>()
+      orders?.forEach(order => {
+        const date = new Date(order.order_date).toLocaleDateString()
+        salesMap.set(date, (salesMap.get(date) || 0) + parseFloat(order.total_price))
+      })
+
+      setSalesData(Array.from(salesMap.entries())
+        .map(([date, sales]) => ({ date, sales }))
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+      )
 
       // Set top products
-      setTopProducts(products || [])
+      setTopProducts(products?.slice(0, 5) || [])
 
       // Set recent orders
-      setRecentOrders((orders || []).slice(0, 5))
+      setRecentOrders(orders?.slice(0, 10) || [])
 
       // Set order status data
       setOrderStatusData(orderStatusData)
@@ -267,6 +300,23 @@ export default function Dashboard() {
                   <option value="30d">Last 30 days</option>
                   <option value="90d">Last 90 days</option>
                 </select>
+                <button
+                  onClick={handleManualSync}
+                  disabled={syncing}
+                  className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
+                >
+                  {syncing ? (
+                    <>
+                      <RefreshCw className="animate-spin h-4 w-4" />
+                      Syncing...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="h-4 w-4" />
+                      Sync Now
+                    </>
+                  )}
+                </button>
                 <button
                   onClick={fetchDashboardData}
                   className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"

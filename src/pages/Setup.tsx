@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
-import { supabase } from '@/lib/supabase'
-import { apiService } from '@/services/api'
-import { CheckCircle, AlertCircle, Store, Link2, Loader2, Info, ArrowRight } from 'lucide-react'
+import { ShopifyAdminService } from '@/services/shopifyAdmin'
+import { CheckCircle, AlertCircle, Link2, Package, Loader2, Info, ArrowRight } from 'lucide-react'
 
 export default function Setup() {
   const [storeUrl, setStoreUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [apiSecret, setApiSecret] = useState('')
+  const [accessToken, setAccessToken] = useState('')
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -16,45 +16,39 @@ export default function Setup() {
   const { user } = useAuthStore()
   const navigate = useNavigate()
 
+  const steps = [
+    { id: 1, title: 'Store URL', description: 'Enter your Shopify store URL' },
+    { id: 2, title: 'API Credentials', description: 'Enter your Admin API credentials' },
+    { id: 3, title: 'Connection', description: 'Test and save your connection' },
+  ]
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setError(null)
 
     try {
-      // Validate store URL format
-      if (!storeUrl.includes('.myshopify.com')) {
-        throw new Error('Please enter a valid Shopify store URL (e.g., yourstore.myshopify.com)')
+      if (!user) {
+        throw new Error('You must be logged in to connect a store')
       }
 
-      // Test Shopify connection
-      const result = await apiService.testShopifyConnection({
-        storeUrl,
-        apiKey,
-        apiSecret,
-      })
-
-      if (!result.connected) {
-        throw new Error(result.error || 'Failed to connect to Shopify store. Please check your credentials.')
+      const credentials = {
+        store_url: storeUrl.trim(),
+        api_key: apiKey.trim(),
+        api_secret: apiSecret.trim(),
+        access_token: accessToken.trim(),
       }
 
-      // Save connection to database
-      const { error: dbError } = await supabase
-        .from('shopify_connections')
-        .insert({
-          user_id: user?.id,
-          store_url: storeUrl,
-          access_token: `${apiKey}:${apiSecret}`, // Store as combined token
-          store_name: result.storeName,
-          is_active: true,
-        })
+      const result = await ShopifyAdminService.connect(credentials, user.id)
 
-      if (dbError) throw dbError
-
-      setSuccess(true)
-      setTimeout(() => {
-        navigate('/dashboard')
-      }, 2000)
+      if (result.success) {
+        setSuccess(true)
+        setTimeout(() => {
+          navigate('/dashboard')
+        }, 2000)
+      } else {
+        setError(result.error || 'Failed to connect store')
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'An error occurred')
     } finally {
@@ -62,11 +56,27 @@ export default function Setup() {
     }
   }
 
-  const steps = [
-    { id: 1, title: 'Store Information', description: 'Enter your Shopify store URL' },
-    { id: 2, title: 'API Credentials', description: 'Provide your API key and secret' },
-    { id: 3, title: 'Connection', description: 'Test and save your connection' },
-  ]
+  const validateStoreUrl = (url: string) => {
+    const shopifyDomainRegex = /^https:\/\/([a-zA-Z0-9][a-zA-Z0-9\-]*\.myshopify\.com)\/?$/
+    return shopifyDomainRegex.test(url)
+  }
+
+  const handleStoreUrlChange = (value: string) => {
+    setStoreUrl(value)
+    if (validateStoreUrl(value)) {
+      setCurrentStep(2)
+    } else {
+      setCurrentStep(1)
+    }
+  }
+
+  const handleCredentialsChange = () => {
+    if (apiKey && apiSecret && accessToken) {
+      setCurrentStep(3)
+    } else {
+      setCurrentStep(2)
+    }
+  }
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -100,37 +110,46 @@ export default function Setup() {
 
       <div className="bg-white shadow rounded-lg">
         <div className="px-6 py-4 border-b border-gray-200">
-          <h2 className="text-lg font-medium text-gray-900">Connect Your Shopify Store</h2>
+          <h2 className="text-lg font-medium text-gray-900">Connect Shopify Store</h2>
           <p className="mt-1 text-sm text-gray-600">
-            Enter your Shopify store credentials to start syncing your data
+            Connect your Shopify store using Admin API credentials to sync orders and products
           </p>
         </div>
 
         <form onSubmit={handleSubmit} className="px-6 py-4 space-y-6">
+          {/* Store URL */}
           <div>
             <label htmlFor="store-url" className="block text-sm font-medium text-gray-700">
               Store URL
             </label>
             <div className="mt-1">
               <input
-                type="text"
+                type="url"
                 name="store-url"
                 id="store-url"
                 required
-                className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md"
-                placeholder="yourstore.myshopify.com"
+                className={`shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md ${
+                  storeUrl && !validateStoreUrl(storeUrl) ? 'border-red-300' : ''
+                }`}
+                placeholder="https://yourstore.myshopify.com"
                 value={storeUrl}
-                onChange={(e) => setStoreUrl(e.target.value)}
+                onChange={(e) => handleStoreUrlChange(e.target.value)}
               />
               <p className="mt-1 text-xs text-gray-500">
-                Your Shopify store URL (must include .myshopify.com)
+                Your Shopify store URL (e.g., https://yourstore.myshopify.com)
               </p>
+              {storeUrl && !validateStoreUrl(storeUrl) && (
+                <p className="mt-1 text-xs text-red-600">
+                  Please enter a valid Shopify store URL
+                </p>
+              )}
             </div>
           </div>
 
+          {/* Admin API Key */}
           <div>
             <label htmlFor="api-key" className="block text-sm font-medium text-gray-700">
-              API Key
+              Admin API Key
             </label>
             <div className="mt-1">
               <input
@@ -139,19 +158,23 @@ export default function Setup() {
                 id="api-key"
                 required
                 className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md"
-                placeholder="Your Shopify API key"
+                placeholder="Your Admin API key"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => {
+                  setApiKey(e.target.value)
+                  handleCredentialsChange()
+                }}
               />
               <p className="mt-1 text-xs text-gray-500">
-                Your Shopify Admin API key
+                From Shopify Admin → Apps → Develop Apps → API Credentials
               </p>
             </div>
           </div>
 
+          {/* Admin API Secret Key */}
           <div>
             <label htmlFor="api-secret" className="block text-sm font-medium text-gray-700">
-              API Secret
+              Admin API Secret Key
             </label>
             <div className="mt-1">
               <input
@@ -160,12 +183,40 @@ export default function Setup() {
                 id="api-secret"
                 required
                 className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md"
-                placeholder="Your Shopify API secret"
+                placeholder="Your Admin API secret key"
                 value={apiSecret}
-                onChange={(e) => setApiSecret(e.target.value)}
+                onChange={(e) => {
+                  setApiSecret(e.target.value)
+                  handleCredentialsChange()
+                }}
               />
               <p className="mt-1 text-xs text-gray-500">
-                Your Shopify Admin API secret
+                From the same API credentials page
+              </p>
+            </div>
+          </div>
+
+          {/* Admin Access Token */}
+          <div>
+            <label htmlFor="access-token" className="block text-sm font-medium text-gray-700">
+              Admin Access Token
+            </label>
+            <div className="mt-1">
+              <input
+                type="password"
+                name="access-token"
+                id="access-token"
+                required
+                className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md"
+                placeholder="Your Admin API access token"
+                value={accessToken}
+                onChange={(e) => {
+                  setAccessToken(e.target.value)
+                  handleCredentialsChange()
+                }}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Generated from your custom app's Admin API access token
               </p>
             </div>
           </div>
@@ -199,7 +250,7 @@ export default function Setup() {
           <div className="flex justify-end">
             <button
               type="submit"
-              disabled={loading || success}
+              disabled={loading || success || !validateStoreUrl(storeUrl) || !apiKey || !apiSecret || !accessToken}
               className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? (
@@ -224,12 +275,32 @@ export default function Setup() {
             <Info className="h-5 w-5 text-blue-400" />
           </div>
           <div className="ml-3">
-            <h3 className="text-sm font-medium text-blue-800">Need help finding your API credentials?</h3>
+            <h3 className="text-sm font-medium text-blue-800">How to get Admin API credentials</h3>
             <div className="mt-2 text-sm text-blue-700">
-              <p>1. Log in to your Shopify admin panel</p>
-              <p>2. Go to Settings → Apps and sales channels</p>
-              <p>3. Click "Develop apps" or create a private app</p>
-              <p>4. Generate API credentials with read access to orders and products</p>
+              <p className="font-medium mb-2">1. Create a Custom App in Shopify Admin:</p>
+              <ol className="list-decimal list-inside space-y-1 ml-4">
+                <li>Go to <strong>Settings → Apps and sales channels</strong></li>
+                <li>Click <strong>Develop apps</strong></li>
+                <li>Click <strong>Create app</strong></li>
+                <li>Enter app name and contact email</li>
+              </ol>
+              
+              <p className="font-medium mb-2 mt-4">2. Configure Admin API access:</p>
+              <ol className="list-decimal list-inside space-y-1 ml-4">
+                <li>Go to <strong>API permissions</strong></li>
+                <li>Under <strong>Admin API access scopes</strong>, select:</li>
+                <li className="ml-6">• Read orders (orders:read)</li>
+                <li className="ml-6">• Read products (products:read)</li>
+                <li className="ml-6">• Read customers (customers:read)</li>
+                <li>Click <strong>Save</strong></li>
+              </ol>
+              
+              <p className="font-medium mb-2 mt-4">3. Install and get credentials:</p>
+              <ol className="list-decimal list-inside space-y-1 ml-4">
+                <li>Click <strong>Install app</strong></li>
+                <li>After installation, go to <strong>API credentials</strong></li>
+                <li>Copy the <strong>Admin API key</strong>, <strong>Admin API secret key</strong>, and <strong>Admin API access token</strong></li>
+              </ol>
             </div>
           </div>
         </div>
@@ -239,11 +310,11 @@ export default function Setup() {
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center">
             <div className="flex-shrink-0">
-              <Store className="h-8 w-8 text-blue-600" />
+              <Package className="h-8 w-8 text-blue-600" />
             </div>
             <div className="ml-3">
               <h3 className="text-sm font-medium text-gray-900">Secure Connection</h3>
-              <p className="text-xs text-gray-500">Your API keys are encrypted and stored securely</p>
+              <p className="text-xs text-gray-500">Encrypted API credentials storage</p>
             </div>
           </div>
         </div>
@@ -255,7 +326,7 @@ export default function Setup() {
             </div>
             <div className="ml-3">
               <h3 className="text-sm font-medium text-gray-900">Auto-Sync</h3>
-              <p className="text-xs text-gray-500">Orders and products sync automatically</p>
+              <p className="text-xs text-gray-500">Automatic order synchronization</p>
             </div>
           </div>
         </div>
@@ -266,8 +337,8 @@ export default function Setup() {
               <CheckCircle className="h-8 w-8 text-purple-600" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Real-time Data</h3>
-              <p className="text-xs text-gray-500">Get instant insights into your store performance</p>
+              <h3 className="text-sm font-medium text-gray-900">Real-Time Data</h3>
+              <p className="text-xs text-gray-500">Live order updates and analytics</p>
             </div>
           </div>
         </div>
