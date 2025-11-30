@@ -262,7 +262,7 @@ function transformShopifyOrder(shopifyOrder: any, connectionId: string): any {
 }
 
 // Fetch all orders for a specific user with strict isolation
-export async function fetchAllOrders(userId: string): Promise<{ success: boolean; orders?: any[]; error?: string }> {
+export async function fetchAllOrders(userId: string): Promise<{ success: boolean; orders?: any[]; error?: string; message?: string }> {
   try {
     // Get user's connection only
     const { data: connection, error: connectionError } = await supabase
@@ -326,7 +326,7 @@ export async function fetchAllOrders(userId: string): Promise<{ success: boolean
 }
 
 // Get user's orders with complete isolation
-export async function getUserOrders(userId: string): Promise<{ success: boolean; orders?: any[]; error?: string }> {
+export async function getUserOrders(userId: string): Promise<{ success: boolean; orders?: any[]; error?: string; message?: string }> {
   try {
     // Get user's connection first
     const { data: connection, error: connectionError } = await supabase
@@ -365,7 +365,7 @@ export async function getUserOrders(userId: string): Promise<{ success: boolean;
 }
 
 // Delete user's Shopify connection and all associated data
-export async function deleteUserConnection(userId: string): Promise<{ success: boolean; error?: string }> {
+export async function deleteUserConnection(userId: string): Promise<{ success: boolean; error?: string; message?: string }> {
   try {
     // Get user's connection
     const { data: connection, error: connectionError } = await supabase
