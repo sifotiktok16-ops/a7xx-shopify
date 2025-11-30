@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { ShopifyAdminService } from '@/services/shopifyAdmin'
 import { AutoSyncService } from '@/services/autoSync'
+import { getUserOrders } from '@/services/shopifyApi'
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -131,31 +132,18 @@ export default function Dashboard() {
         return
       }
 
-      // Check if we have any orders, if not, fetch from Shopify
-      const { data: existingOrders } = await supabase
-        .from('orders')
-        .select('id')
-        .eq('connection_id', connection.id)
-        .limit(1)
-
-      if (!existingOrders || existingOrders.length === 0) {
-        // Fetch orders from Shopify Admin API
-        const result = await ShopifyAdminService.fetchAllOrders(currentUser.id)
-        if (!result.success) {
-          console.error('Failed to fetch orders:', result.error)
-        }
+      // Get user's orders only (with complete isolation)
+      const result = await getUserOrders(currentUser.id)
+      
+      if (!result.success || !result.orders) {
+        console.error('Failed to get user orders:', result.error)
+        setLoading(false)
+        return
       }
 
-      // Fetch orders from database
-      const { data: orders, error: ordersError } = await supabase
-        .from('orders')
-        .select('*')
-        .eq('connection_id', connection.id)
-        .order('order_date', { ascending: false })
+      const orders = result.orders
 
-      if (ordersError) throw ordersError
-
-      // Fetch products from database
+      // Fetch user's products only
       const { data: products, error: productsError } = await supabase
         .from('products')
         .select('*')
@@ -165,17 +153,17 @@ export default function Dashboard() {
 
       if (productsError) throw productsError
 
-      // Calculate metrics
+      // Calculate metrics for this user only
       const totalSales = orders?.reduce((sum, order) => sum + (parseFloat(order.total_price) || 0), 0) || 0
       const orderCount = orders?.length || 0
       const avgOrderValue = orderCount > 0 ? totalSales / orderCount : 0
       const dailyOrders = Math.round(orderCount / (dateRange === '7d' ? 7 : dateRange === '30d' ? 30 : 90))
       
-      // Calculate customer metrics
+      // Calculate customer metrics for this user
       const uniqueCustomers = new Set(orders?.map(order => order.email).filter(Boolean))
       const totalCustomers = uniqueCustomers.size
       
-      // Calculate order status distribution
+      // Calculate order status distribution for this user
       const statusCounts = orders?.reduce((acc: Record<string, number>, order) => {
         const status = order.financial_status || 'pending'
         acc[status] = (acc[status] || 0) + 1
@@ -199,7 +187,7 @@ export default function Dashboard() {
         revenueGrowth: 15.2, // Mock growth percentage
       })
 
-      // Prepare sales chart data
+      // Prepare sales chart data for this user
       const salesMap = new Map<string, number>()
       orders?.forEach(order => {
         const date = new Date(order.order_date).toLocaleDateString()
@@ -211,13 +199,13 @@ export default function Dashboard() {
         .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
       )
 
-      // Set top products
+      // Set top products for this user
       setTopProducts(products?.slice(0, 5) || [])
 
-      // Set recent orders
+      // Set recent orders for this user
       setRecentOrders(orders?.slice(0, 10) || [])
 
-      // Set order status data
+      // Set order status data for this user
       setOrderStatusData(orderStatusData)
 
     } catch (error) {

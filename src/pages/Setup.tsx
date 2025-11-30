@@ -43,9 +43,10 @@ export default function Setup() {
 
       if (result.success) {
         setSuccess(true)
+        // Show the success message with order count
         setTimeout(() => {
           navigate('/dashboard')
-        }, 2000)
+        }, 3000)
       } else {
         setError(result.error || 'Failed to connect store')
       }
@@ -238,9 +239,10 @@ export default function Setup() {
               <div className="flex">
                 <CheckCircle className="h-5 w-5 text-green-400" />
                 <div className="ml-3">
-                  <h3 className="text-sm font-medium text-green-800">Success!</h3>
+                  <h3 className="text-sm font-medium text-green-800">Connection Successful!</h3>
                   <div className="mt-2 text-sm text-green-700">
-                    Your Shopify store has been connected successfully. Redirecting to dashboard...
+                    Your Shopify store has been connected successfully and all orders have been fetched. 
+                    Redirecting to your dashboard to view your data...
                   </div>
                 </div>
               </div>
