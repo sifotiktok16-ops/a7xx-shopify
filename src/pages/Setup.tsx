@@ -49,6 +49,7 @@ export default function Setup() {
         }, 3000)
       } else {
         setError(result.error || 'Failed to connect store')
+        console.error('Connection failed:', result.error)
       }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'An error occurred')

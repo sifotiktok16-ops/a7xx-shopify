@@ -5,13 +5,23 @@ const SHOPIFY_API_VERSION = '2024-01'
 
 // Simple encryption for demo (in production, use proper server-side encryption)
 function encrypt(text: string): string {
-  // For demo purposes, we'll store as-is (you should implement proper encryption)
-  return btoa(text)
+  try {
+    // For demo purposes, we'll store as-is (you should implement proper encryption)
+    return btoa(text)
+  } catch (error) {
+    console.error('Encryption error:', error)
+    return text // Fallback to plain text if encryption fails
+  }
 }
 
 function decrypt(text: string): string {
-  // For demo purposes, we'll decode as-is (you should implement proper decryption)
-  return atob(text)
+  try {
+    // For demo purposes, we'll decode as-is (you should implement proper decryption)
+    return atob(text)
+  } catch (error) {
+    console.error('Decryption error:', error)
+    return text // Fallback to plain text if decryption fails
+  }
 }
 
 // Validate Shopify store URL
@@ -23,6 +33,8 @@ function validateStoreURL(url: string): boolean {
 // Test Shopify Admin API connection
 async function testShopifyConnection(storeUrl: string, accessToken: string): Promise<{ success: boolean; error?: string }> {
   try {
+    console.log('Testing Shopify connection:', { storeUrl, accessToken: accessToken.substring(0, 10) + '...' })
+    
     const response = await fetch(`${storeUrl}/admin/api/${SHOPIFY_API_VERSION}/orders.json?limit=1`, {
       method: 'GET',
       headers: {
@@ -31,6 +43,8 @@ async function testShopifyConnection(storeUrl: string, accessToken: string): Pro
       },
     })
 
+    console.log('Shopify API response:', { status: response.status, ok: response.ok })
+
     if (response.ok) {
       return { success: true }
     } else if (response.status === 401) {
@@ -38,10 +52,13 @@ async function testShopifyConnection(storeUrl: string, accessToken: string): Pro
     } else if (response.status === 404) {
       return { success: false, error: 'Invalid store URL' }
     } else {
-      return { success: false, error: `Shopify API error: ${response.status}` }
+      const errorText = await response.text()
+      console.error('Shopify API error response:', errorText)
+      return { success: false, error: `Shopify API error: ${response.status} - ${errorText}` }
     }
   } catch (error) {
-    return { success: false, error: 'Connection failed' }
+    console.error('Shopify connection error:', error)
+    return { success: false, error: `Connection failed: ${error instanceof Error ? error.message : 'Unknown error'}` }
   }
 }
 
@@ -53,26 +70,41 @@ export async function connectShopify(credentials: {
   access_token: string
 }, userId: string): Promise<{ success: boolean; error?: string; data?: any }> {
   try {
+    console.log('Starting Shopify connection for user:', userId)
+    
     // Validate store URL
     if (!validateStoreURL(credentials.store_url)) {
       return { success: false, error: 'Invalid store URL format' }
     }
 
+    console.log('Store URL validated:', credentials.store_url)
+
     // Test Shopify connection with user's credentials
     const connectionTest = await testShopifyConnection(credentials.store_url, credentials.access_token)
+    
     if (!connectionTest.success) {
+      console.error('Connection test failed:', connectionTest.error)
       return { success: false, error: connectionTest.error }
     }
 
+    console.log('Connection test successful')
+
     // Check if user already has a connection
-    const { data: existingConnection } = await supabase
+    const { data: existingConnection, error: fetchError } = await supabase
       .from('shopify_connections')
       .select('id, store_url')
       .eq('user_id', userId)
       .eq('is_active', true)
       .single()
 
+    if (fetchError && fetchError.code !== 'PGRST116') {
+      console.error('Error fetching existing connection:', fetchError)
+      return { success: false, error: 'Database error: ' + fetchError.message }
+    }
+
     if (existingConnection) {
+      console.log('Updating existing connection:', existingConnection.id)
+      
       // Update existing connection
       const { data: connection, error: updateError } = await supabase
         .from('shopify_connections')
@@ -91,11 +123,16 @@ export async function connectShopify(credentials: {
 
       if (updateError) {
         console.error('Database update error:', updateError)
-        return { success: false, error: 'Failed to update connection' }
+        return { success: false, error: 'Failed to update connection: ' + updateError.message }
       }
 
       // Immediately fetch orders for this user
-      await fetchAndStoreOrders(connection.id, credentials.store_url, credentials.access_token)
+      try {
+        await fetchAndStoreOrders(connection.id, credentials.store_url, credentials.access_token)
+      } catch (fetchError) {
+        console.error('Error fetching orders:', fetchError)
+        // Don't fail the connection, just log the error
+      }
 
       return { 
         success: true, 
@@ -107,6 +144,8 @@ export async function connectShopify(credentials: {
         }
       }
     } else {
+      console.log('Creating new connection')
+      
       // Create new connection
       const encryptedApiKey = encrypt(credentials.api_key)
       const encryptedApiSecret = encrypt(credentials.api_secret)
@@ -129,11 +168,16 @@ export async function connectShopify(credentials: {
 
       if (dbError) {
         console.error('Database error:', dbError)
-        return { success: false, error: 'Failed to store connection' }
+        return { success: false, error: 'Failed to store connection: ' + dbError.message }
       }
 
       // Immediately fetch orders for this user
-      await fetchAndStoreOrders(connection.id, credentials.store_url, credentials.access_token)
+      try {
+        await fetchAndStoreOrders(connection.id, credentials.store_url, credentials.access_token)
+      } catch (fetchError) {
+        console.error('Error fetching orders:', fetchError)
+        // Don't fail the connection, just log the error
+      }
 
       return { 
         success: true, 
@@ -148,7 +192,7 @@ export async function connectShopify(credentials: {
 
   } catch (error) {
     console.error('Shopify connection error:', error)
-    return { success: false, error: 'Connection failed' }
+    return { success: false, error: `Connection failed: ${error instanceof Error ? error.message : 'Unknown error'}` }
   }
 }
 
