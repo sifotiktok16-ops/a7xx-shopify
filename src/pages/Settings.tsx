@@ -150,7 +150,7 @@ export default function Settings() {
             <div>
               <label className="block text-sm font-medium text-gray-700">Account Created</label>
               <p className="mt-1 text-sm text-gray-900">
-                {user?.created_at ? new Date(user.created_at).toLocaleDateString() : 'N/A'}
+                {user?.email || 'N/A'}
               </p>
             </div>
           </div>

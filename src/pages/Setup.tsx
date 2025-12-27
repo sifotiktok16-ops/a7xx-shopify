@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
-import { ShopifyAdminService } from '@/services/shopifyAdmin'
 import { CheckCircle, AlertCircle, Link2, Package, Loader2, Info, ArrowRight } from 'lucide-react'
+
+import { AutoSyncService } from '@/services/autoSync'
 
 export default function Setup() {
   const [storeUrl, setStoreUrl] = useState('')
@@ -13,7 +14,7 @@ export default function Setup() {
   const [success, setSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [currentStep, setCurrentStep] = useState(1)
-  const { user } = useAuthStore()
+  const { getUserId } = useAuthStore()
   const navigate = useNavigate()
 
   const steps = [
@@ -28,29 +29,57 @@ export default function Setup() {
     setError(null)
 
     try {
-      if (!user) {
+      const uid = getUserId()
+      if (!uid) {
         throw new Error('You must be logged in to connect a store')
       }
-
-      const credentials = {
+      const payload = {
         store_url: storeUrl.trim(),
         api_key: apiKey.trim(),
         api_secret: apiSecret.trim(),
         access_token: accessToken.trim(),
+        user_id: uid,
       }
 
-      const result = await ShopifyAdminService.connect(credentials, user.id)
+      const response = await fetch('/api/shopify/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
 
-      if (result.success) {
-        setSuccess(true)
-        // Show the success message with order count
-        setTimeout(() => {
-          navigate('/dashboard')
-        }, 3000)
-      } else {
-        setError(result.error || 'Failed to connect store')
-        console.error('Connection failed:', result.error)
+      const raw = await response.text()
+      let result: any
+      try {
+        result = JSON.parse(raw)
+      } catch {
+        const ct = response.headers.get('content-type') || 'unknown'
+        const snippet = raw ? raw.slice(0, 200) : ''
+        result = { success: false, error: `Invalid server response (${response.status}, ${ct}) ${snippet}` }
       }
+
+      if (!response.ok || !result?.success) {
+        const message = result?.error || `Connection failed (${response.status})`
+        setError(message)
+        console.error('Connection failed:', message)
+        return
+      }
+
+      setSuccess(true)
+
+      // Trigger background sync
+      // We don't await this blocking user navigation, but we show a small toast or just let it happen
+      // Ideally show a "Syncing..." state
+      try {
+        // Use the robust recursive sync service
+        AutoSyncService.triggerManualSync(uid).then(result => {
+          if (result.success) console.log('Initial sync started successfully')
+          else console.error('Initial sync failed to start', result.message)
+        })
+      } catch (e) {
+        console.error('Failed to trigger background sync', e)
+      }
+
+      navigate('/dashboard')
     } catch (error) {
       setError(error instanceof Error ? error.message : 'An error occurred')
     } finally {
@@ -59,8 +88,7 @@ export default function Setup() {
   }
 
   const validateStoreUrl = (url: string) => {
-    const shopifyDomainRegex = /^https:\/\/([a-zA-Z0-9][a-zA-Z0-9\-]*\.myshopify\.com)\/?$/
-    return shopifyDomainRegex.test(url)
+    return /^https:\/\/[a-zA-Z0-9\-]+\.myshopify\.com$/.test(url.replace(/\/$/, ''))
   }
 
   const handleStoreUrlChange = (value: string) => {
@@ -87,17 +115,15 @@ export default function Setup() {
         <div className="flex items-center justify-between">
           {steps.map((step, index) => (
             <div key={step.id} className="flex items-center">
-              <div className={`flex items-center justify-center w-10 h-10 rounded-full border-2 ${
-                currentStep >= step.id
-                  ? 'border-blue-600 bg-blue-600 text-white'
-                  : 'border-gray-300 bg-white text-gray-500'
-              }`}>
+              <div className={`flex items-center justify-center w-10 h-10 rounded-full border-2 ${currentStep >= step.id
+                ? 'border-blue-600 bg-blue-600 text-white'
+                : 'border-gray-300 bg-white text-gray-500'
+                }`}>
                 {step.id}
               </div>
               <div className="ml-3">
-                <p className={`text-sm font-medium ${
-                  currentStep >= step.id ? 'text-blue-600' : 'text-gray-500'
-                }`}>
+                <p className={`text-sm font-medium ${currentStep >= step.id ? 'text-blue-600' : 'text-gray-500'
+                  }`}>
                   {step.title}
                 </p>
                 <p className="text-xs text-gray-500">{step.description}</p>
@@ -130,9 +156,8 @@ export default function Setup() {
                 name="store-url"
                 id="store-url"
                 required
-                className={`shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md ${
-                  storeUrl && !validateStoreUrl(storeUrl) ? 'border-red-300' : ''
-                }`}
+                className={`shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md ${storeUrl && !validateStoreUrl(storeUrl) ? 'border-red-300' : ''
+                  }`}
                 placeholder="https://yourstore.myshopify.com"
                 value={storeUrl}
                 onChange={(e) => handleStoreUrlChange(e.target.value)}
@@ -242,7 +267,7 @@ export default function Setup() {
                 <div className="ml-3">
                   <h3 className="text-sm font-medium text-green-800">Connection Successful!</h3>
                   <div className="mt-2 text-sm text-green-700">
-                    Your Shopify store has been connected successfully and all orders have been fetched. 
+                    Your Shopify store has been connected successfully and all orders have been fetched.
                     Redirecting to your dashboard to view your data...
                   </div>
                 </div>
@@ -287,7 +312,7 @@ export default function Setup() {
                 <li>Click <strong>Create app</strong></li>
                 <li>Enter app name and contact email</li>
               </ol>
-              
+
               <p className="font-medium mb-2 mt-4">2. Configure Admin API access:</p>
               <ol className="list-decimal list-inside space-y-1 ml-4">
                 <li>Go to <strong>API permissions</strong></li>
@@ -297,7 +322,7 @@ export default function Setup() {
                 <li className="ml-6">• Read customers (customers:read)</li>
                 <li>Click <strong>Save</strong></li>
               </ol>
-              
+
               <p className="font-medium mb-2 mt-4">3. Install and get credentials:</p>
               <ol className="list-decimal list-inside space-y-1 ml-4">
                 <li>Click <strong>Install app</strong></li>
@@ -321,7 +346,7 @@ export default function Setup() {
             </div>
           </div>
         </div>
-        
+
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center">
             <div className="flex-shrink-0">
@@ -333,7 +358,7 @@ export default function Setup() {
             </div>
           </div>
         </div>
-        
+
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center">
             <div className="flex-shrink-0">

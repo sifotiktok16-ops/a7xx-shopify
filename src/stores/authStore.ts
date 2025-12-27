@@ -1,54 +1,51 @@
 import { create } from 'zustand'
-import { User } from '@supabase/supabase-js'
+import { Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 
-interface AuthState {
-  user: User | null
-  loading: boolean
-  error: string | null
-  signIn: (email: string, password: string) => Promise<void>
-  signUp: (email: string, password: string) => Promise<void>
-  signInWithGoogle: () => Promise<void>
-  signOut: () => Promise<void>
-  checkAuth: () => Promise<void>
+interface AuthUser {
+  id: string
+  email: string
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+interface AuthState {
+  user: AuthUser | null
+  session: Session | null
+  loading: boolean
+  error: string | null
+  
+  // Functions
+  signUp: (email: string, password: string) => Promise<void>
+  signIn: (email: string, password: string) => Promise<void>
+  signInWithGoogle: () => Promise<void>
+  resendConfirmation: (email: string) => Promise<void>
+  signOut: () => Promise<void>
+  restoreSession: () => Promise<void>
+  setupAuthListener: () => () => void
+  getUserId: () => string | null
+}
+
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
+  session: null,
   loading: false,
   error: null,
-
-  signIn: async (email: string, password: string) => {
-    set({ loading: true, error: null })
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
-      
-      if (error) throw error
-      
-      set({ user: data.user, loading: false })
-    } catch (error) {
-      set({ 
-        error: error instanceof Error ? error.message : 'An error occurred during sign in',
-        loading: false 
-      })
-      throw error
-    }
-  },
 
   signUp: async (email: string, password: string) => {
     set({ loading: true, error: null })
     try {
       const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
+        email: email.trim(),
+        password
       })
       
       if (error) throw error
       
-      set({ user: data.user, loading: false })
+      if (data?.session) {
+        await supabase.auth.signOut()
+      }
+      
+      set({ loading: false })
+      console.log('✅ User created successfully in Supabase Auth')
     } catch (error) {
       set({ 
         error: error instanceof Error ? error.message : 'An error occurred during sign up',
@@ -58,10 +55,42 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
+  signIn: async (email: string, password: string) => {
+    set({ loading: true, error: null })
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      })
+      
+      if (error) throw error
+      
+      const authUser: AuthUser | null = data.user ? {
+        id: data.user.id,
+        email: data.user.email || ''
+      } : null
+      
+      set({ 
+        user: authUser,
+        session: data.session,
+        loading: false,
+        error: null
+      })
+      
+      console.log('✅ User signed in successfully:', authUser?.id)
+    } catch (error) {
+      set({ 
+        error: error instanceof Error ? error.message : 'An error occurred during sign in',
+        loading: false 
+      })
+      throw error
+    }
+  },
+
   signInWithGoogle: async () => {
     set({ loading: true, error: null })
     try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
+      const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo: `${window.location.origin}/dashboard`
@@ -71,10 +100,30 @@ export const useAuthStore = create<AuthState>((set) => ({
       if (error) throw error
       
       set({ loading: false })
+      console.log('✅ Google OAuth initiated')
     } catch (error) {
       set({ 
         error: error instanceof Error ? error.message : 'An error occurred during Google sign in',
         loading: false 
+      })
+      throw error
+    }
+  },
+
+  resendConfirmation: async (email: string) => {
+    set({ loading: true, error: null })
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: email.trim(),
+      })
+      if (error) throw error
+      set({ loading: false })
+      console.log('✉️ Confirmation email resent if account exists')
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to resend confirmation email',
+        loading: false,
       })
       throw error
     }
@@ -87,7 +136,14 @@ export const useAuthStore = create<AuthState>((set) => ({
       
       if (error) throw error
       
-      set({ user: null, loading: false })
+      set({ 
+        user: null,
+        session: null,
+        loading: false,
+        error: null
+      })
+      
+      console.log('✅ User signed out successfully')
     } catch (error) {
       set({ 
         error: error instanceof Error ? error.message : 'An error occurred during sign out',
@@ -97,16 +153,67 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
-  checkAuth: async () => {
-    set({ loading: true })
+  restoreSession: async () => {
+    set({ loading: true, error: null })
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      set({ user, loading: false })
-    } catch (error) {
+      const { data: { session }, error } = await supabase.auth.getSession()
+      
+      if (error) throw error
+      
+      const authUser: AuthUser | null = session?.user ? {
+        id: session.user.id,
+        email: session.user.email || ''
+      } : null
+      
       set({ 
-        error: error instanceof Error ? error.message : 'An error occurred during auth check',
-        loading: false 
+        user: authUser,
+        session: session,
+        loading: false,
+        error: null
+      })
+      
+      console.log('✅ Session restored:', authUser?.id ? 'User found' : 'No user')
+    } catch (error) {
+      console.error('❌ Session restore error:', error)
+      set({ 
+        loading: false,
+        error: error instanceof Error ? error.message : 'Failed to restore session'
       })
     }
   },
+
+  setupAuthListener: () => {
+    // Ensure we only set up the listener once
+    if (authListenerSetup) {
+      return () => {}
+    }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        console.log('🔄 Auth state changed:', event, session?.user?.id)
+        const authUser: AuthUser | null = session?.user ? {
+          id: session.user.id,
+          email: session.user.email || ''
+        } : null
+        set({
+          user: authUser,
+          session: session,
+          loading: false,
+          error: event === 'SIGNED_IN' ? null : get().error
+        })
+      }
+    )
+    authListenerSetup = true
+    return () => {
+      subscription.unsubscribe()
+      authListenerSetup = false
+    }
+  },
+
+  getUserId: () => {
+    const { user } = get()
+    return user?.id || null
+  }
 }))
+
+// Auth state listener - setup once to update user + session automatically
+let authListenerSetup = false

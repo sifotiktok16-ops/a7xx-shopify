@@ -1,4 +1,3 @@
-import { ShopifyAdminService } from './shopifyAdmin'
 import { supabase } from '@/lib/supabase'
 
 export class AutoSyncService {
@@ -67,45 +66,108 @@ export class AutoSyncService {
   // Sync a specific connection
   private static async syncConnection(connectionId: string, userId: string): Promise<void> {
     try {
-      // Log sync start
-      const { data: log } = await supabase
+      // --- 1. SYNC ORDERS (Chained/Recursive) ---
+      let ordersLogId: string | null = null
+
+      try {
+        // Initial request
+        let nextCursor: string | null = null
+        let hasMore = true
+        let totalItems = 0
+
+        console.log(`Starting orders sync for ${connectionId}...`)
+
+        while (hasMore) {
+          const payload: any = {
+            user_id: userId,
+            sync_log_id: ordersLogId, // Pass ID to keep using same log
+            cursor: nextCursor
+          }
+
+          const resp = await fetch('/api/shopify/sync-orders?mode=auto', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+
+          if (!resp.ok) {
+            const errText = await resp.text()
+            throw new Error(`Sync API failed (${resp.status}): ${errText}`)
+          }
+
+          const data = await resp.json()
+
+          if (!data.success) {
+            throw new Error(data.error || 'Unknown sync error')
+          }
+
+          // Capture the log ID from the first response if we didn't have it
+          if (!ordersLogId && data.sync_log_id) {
+            ordersLogId = data.sync_log_id
+          }
+
+          // Update local state
+          nextCursor = data.next_cursor
+          hasMore = !!nextCursor
+          totalItems += (data.processed || 0)
+
+          console.log(`Processed batch: ${data.processed} orders. More: ${hasMore}`)
+        }
+
+        console.log(`Sync complete. Total orders: ${totalItems}`)
+
+      } catch (err: any) {
+        console.error(`Orders sync failed for ${connectionId}:`, err)
+        // If we have a log ID, mark it as error in DB since backend might not have caught a network crash
+        if (ordersLogId) {
+          await supabase.from('sync_logs').update({
+            status: 'error',
+            error_message: err.message,
+            completed_at: new Date().toISOString()
+          }).eq('id', ordersLogId)
+        }
+      }
+
+      // Create a separate log for products sync
+      const { data: prodLog } = await supabase
         .from('sync_logs')
         .insert({
           connection_id: connectionId,
-          sync_type: 'orders',
+          sync_type: 'products',
           status: 'in_progress',
           started_at: new Date().toISOString(),
         })
         .select()
         .single()
 
-      // Fetch orders from Shopify
-      const result = await ShopifyAdminService.fetchAllOrders(userId)
+      // Trigger backend sync (products)
+      const productsResp = await fetch('/api/shopify/sync-products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId }),
+      })
+      const productsJson = await productsResp.json().catch(() => ({ success: false, error: 'Invalid server response' }))
 
-      if (result.success) {
-        // Update sync log with success
+      if (productsResp.ok && productsJson?.success) {
         await supabase
           .from('sync_logs')
           .update({
             status: 'success',
-            items_processed: result.orders?.length || 0,
+            items_processed: productsJson.items_processed || 0,
             completed_at: new Date().toISOString(),
           })
-          .eq('id', log.id)
-
-        console.log(`Synced ${result.orders?.length || 0} orders for connection ${connectionId}`)
+          .eq('id', prodLog.id)
+        console.log(`Synced ${productsJson.items_processed || 0} products for connection ${connectionId}`)
       } else {
-        // Update sync log with error
         await supabase
           .from('sync_logs')
           .update({
             status: 'error',
-            error_message: result.error,
+            error_message: productsJson?.error || `HTTP ${productsResp.status}`,
             completed_at: new Date().toISOString(),
           })
-          .eq('id', log.id)
-
-        console.error(`Sync failed for connection ${connectionId}:`, result.error)
+          .eq('id', prodLog.id)
+        console.error(`Products sync failed for connection ${connectionId}:`, productsJson?.error)
       }
 
     } catch (error) {
@@ -128,7 +190,7 @@ export class AutoSyncService {
         return { success: false, message: 'No active Shopify connection found' }
       }
 
-      // Trigger sync
+      // Trigger sync via backend
       await this.syncConnection(connection.id, userId)
 
       return { success: true, message: 'Manual sync completed successfully' }

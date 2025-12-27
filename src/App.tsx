@@ -1,17 +1,17 @@
-import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useEffect } from 'react'
 import { useAuthStore } from '@/stores/authStore'
 import DashboardLayout from '@/components/DashboardLayout'
-import Login from '@/pages/Login'
-import Signup from '@/pages/Signup'
 import Dashboard from '@/pages/Dashboard'
 import Setup from '@/pages/Setup'
 import Delivery from '@/pages/Delivery'
 import Settings from '@/pages/Settings'
+import Login from '@/pages/Login'
+import Signup from '@/pages/Signup'
 
+// ProtectedRoute component - ensures user is logged in
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore()
-  const location = useLocation()
 
   if (loading) {
     return (
@@ -22,12 +22,13 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
-    return <Navigate to="/" state={{ from: location }} replace />
+    return <Navigate to="/login" replace />
   }
 
   return children
 }
 
+// AuthRoute component - redirects logged-in users away from auth pages
 function AuthRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore()
 
@@ -47,18 +48,23 @@ function AuthRoute({ children }: { children: React.ReactNode }) {
 }
 
 function AppContent() {
-  const { checkAuth } = useAuthStore()
-  const navigate = useNavigate()
+  const { restoreSession, setupAuthListener } = useAuthStore()
 
   useEffect(() => {
-    checkAuth()
-  }, [checkAuth])
+    // Setup auth listener once for automatic state updates
+    const cleanup = setupAuthListener()
+    
+    // Restore session on app load
+    restoreSession()
+    
+    return cleanup
+  }, [restoreSession])
 
   return (
     <Routes>
       {/* Auth Routes */}
       <Route
-        path="/"
+        path="/login"
         element={
           <AuthRoute>
             <Login />
@@ -74,7 +80,13 @@ function AppContent() {
         }
       />
 
-      {/* Protected Routes */}
+      {/* Default redirect to login */}
+      <Route
+        path="/"
+        element={<Navigate to="/login" replace />}
+      />
+
+      {/* Protected Routes - require authentication */}
       <Route
         path="/dashboard"
         element={
@@ -117,17 +129,15 @@ function AppContent() {
       />
 
       {/* Catch all route */}
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   )
 }
 
-function App() {
+export default function App() {
   return (
     <BrowserRouter>
       <AppContent />
     </BrowserRouter>
   )
 }
-
-export default App

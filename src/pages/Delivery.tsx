@@ -45,18 +45,24 @@ export default function Delivery() {
     setError(null)
 
     try {
+      if (!user) {
+        throw new Error('You must be logged in to connect a delivery service')
+      }
       if (!selectedService) {
         throw new Error('Please select a delivery service')
       }
 
-      // Save delivery connection to database
+      function encrypt(text: string): string {
+        try { return btoa(text) } catch { return text }
+      }
+
       const { error: dbError } = await supabase
         .from('delivery_connections')
         .insert({
-          user_id: user?.id,
+          user_id: user.id,
           service_name: selectedService,
-          api_key: apiKey,
-          api_secret: apiSecret,
+          api_key: encrypt(apiKey),
+          api_secret: encrypt(apiSecret),
           is_active: true,
         })
 

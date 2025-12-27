@@ -1,4 +1,4 @@
-import { connectShopify, fetchAllOrders } from './shopifyApi'
+import { connectShopify } from './shopifyApi'
 
 export interface ShopifyCredentials {
   store_url: string
@@ -40,11 +40,5 @@ export class ShopifyAdminService {
   // Connect Shopify store
   static async connect(credentials: ShopifyCredentials, userId: string): Promise<{ success: boolean; error?: string; data?: any }> {
     return await connectShopify(credentials, userId)
-  }
-
-  // Fetch all orders with pagination
-  static async fetchAllOrders(userId: string): Promise<{ success: boolean; orders?: ShopifyOrder[]; error?: string }> {
-    const result = await fetchAllOrders(userId)
-    return result
   }
 }

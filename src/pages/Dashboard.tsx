@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
-import { ShopifyAdminService } from '@/services/shopifyAdmin'
-import { AutoSyncService } from '@/services/autoSync'
+import { useAuthStore } from '@/stores/authStore'
 import { getUserOrders } from '@/services/shopifyApi'
 import { 
   TrendingUp, 
@@ -66,9 +65,11 @@ function MetricCard({ title, value, change, icon: Icon, loading }: MetricCardPro
 
 export default function Dashboard() {
   const navigate = useNavigate()
+  const { user, getUserId } = useAuthStore()
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
-  const [user, setUser] = useState<any>(null)
+  const [syncStatus, setSyncStatus] = useState<{ lastSyncAt: string | null; lastSyncMode: string | null; lastSyncStatus: string; nextAutoSyncTime: string | null }>({ lastSyncAt: null, lastSyncMode: null, lastSyncStatus: 'idle', nextAutoSyncTime: null })
+  const [countdown, setCountdown] = useState<string>('')
   const [metrics, setMetrics] = useState({
     totalSales: '$0',
     orderCount: 0,
@@ -91,14 +92,17 @@ export default function Dashboard() {
 
   const handleManualSync = async () => {
     if (!user) return
-    
     setSyncing(true)
     try {
-      const result = await AutoSyncService.triggerManualSync(user.id)
-      if (result.success) {
-        // Refresh dashboard data
-        await fetchDashboardData()
-      }
+      const resp = await fetch(`/api/shopify/sync-orders?mode=manual`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: getUserId() }),
+      })
+      const json = await resp.json().catch(() => ({ success: false }))
+      if (!resp.ok || !json?.success) throw new Error(json?.error || `HTTP ${resp.status}`)
+      await fetchDashboardData()
+      await fetchSyncStatus(getUserId())
     } catch (error) {
       console.error('Manual sync error:', error)
     } finally {
@@ -110,20 +114,19 @@ export default function Dashboard() {
     try {
       setLoading(true)
       
-      // Get current user
-      const { data: { user: currentUser } } = await supabase.auth.getUser()
-      setUser(currentUser)
-      
-      if (!currentUser) {
+      if (!user) {
         setLoading(false)
         return
       }
+
+      // Fetch sync status
+      await fetchSyncStatus(getUserId())
 
       // Get user's Shopify connection
       const { data: connection } = await supabase
         .from('shopify_connections')
         .select('*')
-        .eq('user_id', currentUser?.id)
+        .eq('user_id', getUserId())
         .eq('is_active', true)
         .single()
 
@@ -133,7 +136,7 @@ export default function Dashboard() {
       }
 
       // Get user's orders only (with complete isolation)
-      const result = await getUserOrders(currentUser.id)
+      const result = await getUserOrders(getUserId())
       
       if (!result.success || !result.orders) {
         console.error('Failed to get user orders:', result.error)
@@ -215,6 +218,39 @@ export default function Dashboard() {
     }
   }
 
+  const fetchSyncStatus = async (userId: string) => {
+    try {
+      const url = `/api/shopify/sync-status?user_id=${encodeURIComponent(userId)}`
+      const resp = await fetch(url)
+      const json = await resp.json().catch(() => ({}))
+      const lastSyncAt = json?.last_sync_at || null
+      const lastSyncMode = json?.last_sync_mode || null
+      const lastSyncStatus = json?.last_sync_status || 'idle'
+      const nextAutoSyncTime = json?.next_auto_sync_time || null
+      setSyncStatus({ lastSyncAt, lastSyncMode, lastSyncStatus, nextAutoSyncTime })
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!syncStatus.nextAutoSyncTime) {
+        setCountdown('')
+        return
+      }
+      const diff = new Date(syncStatus.nextAutoSyncTime).getTime() - Date.now()
+      if (diff <= 0) {
+        setCountdown('now')
+      } else {
+        const m = Math.floor(diff / 60000)
+        const s = Math.floor((diff % 60000) / 1000)
+        setCountdown(`${m}m ${s}s`)
+      }
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [syncStatus.nextAutoSyncTime])
+
   const getStartDate = (range: string) => {
     const now = new Date()
     switch (range) {
@@ -275,6 +311,14 @@ export default function Dashboard() {
               <h2 className="text-2xl font-bold leading-7 text-gray-900 sm:truncate sm:text-3xl sm:tracking-tight">
                 Dashboard
               </h2>
+              <div className="mt-2 text-xs text-gray-600 space-x-3">
+                <span>
+                  Last sync: {syncStatus.lastSyncAt ? new Date(syncStatus.lastSyncAt).toLocaleString() : '—'}
+                </span>
+                <span>• Mode: {syncStatus.lastSyncMode || '—'}</span>
+                <span>• Status: {syncStatus.lastSyncStatus}</span>
+                <span>• Next auto sync: {countdown || '—'}</span>
+              </div>
             </div>
             <div className="mt-4 flex md:ml-4 md:mt-0">
               <div className="flex items-center space-x-2">
