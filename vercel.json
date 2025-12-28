@@ -5,10 +5,7 @@
   "outputDirectory": "dist",
   "functions": {
     "api/**/*": {
-      "runtime": "nodejs20.x",
-      "includeFiles": [
-        "lib/**"
-      ]
+      "runtime": "nodejs20.x"
     }
   }
 }
